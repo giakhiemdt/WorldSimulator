@@ -1,12 +1,15 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { generateCoarseGrid } from "../modules/generator/core/generateCoarse";
+import { loadWorldGenConfigFromFile } from "../modules/generator/config/worldGenConfig";
 
 const cliSeed = process.argv[2];
 const randomSeed =
   Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+const configPath = process.argv[3];
 const seed = cliSeed ?? randomSeed;
 
-const world = generateCoarseGrid(seed);
+const worldConfig = loadWorldGenConfigFromFile(configPath);
+const world = generateCoarseGrid(seed, worldConfig);
 
 mkdirSync("data", { recursive: true });
 
@@ -54,4 +57,9 @@ writeFieldToInt16Bin("data/river.bin", world.river, "0-1");
 writeBiomeToBin("data/biome.bin", world.biome);
 writeFileSync("data/seed.txt", seed, "utf8");
 
-console.log("World generated with seed:", seed);
+console.log(
+  "World generated with seed:",
+  seed,
+  "| config:",
+  configPath ?? "world-config.json"
+);

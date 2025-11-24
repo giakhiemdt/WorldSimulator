@@ -111,7 +111,9 @@ const palette = {
   taiga: [87, 120, 93],
   tundra: [178, 177, 153],
   mountainBase: [122, 116, 99],
+  mountainRange: [139, 130, 112],
   mountainPeak: [181, 178, 170],
+  highPeak: [214, 209, 198],
   snow: [233, 233, 232],
   wetlands: [96, 160, 140],
 };
@@ -134,6 +136,8 @@ function biomeColor(biomeId, elev) {
   // 12 cold rocky mountain
   // 13 alpine snow
   // 14 river valley / wetlands
+  // 15 temperate mountain range
+  // 16 jagged high peak
   const e = clamp01(elev);
   if (e < shallowSeaLevel) {
     const normalized = e / shallowSeaLevel;
@@ -171,6 +175,12 @@ function biomeColor(biomeId, elev) {
       return palette.snow;
     case 14:
       return palette.wetlands;
+    case 15: {
+      const t = clamp01((e - 0.58) / 0.3);
+      return lerpColor(palette.mountainRange, palette.mountainPeak, t);
+    }
+    case 16:
+      return palette.highPeak;
     default:
       return palette.plains;
   }

@@ -1,3 +1,5 @@
+import Alea from "alea";
+import { baseWorldGenConfig, mergeWorldGenConfig, type WorldGenConfigInput } from "../config/worldGenConfig";
 import type { CoarseGrid } from "../types/CoarseState";
 import { createSeededNoise } from "../utils/noise";
 
@@ -8,10 +10,40 @@ function clamp(v: number, min: number, max: number): number {
   return v;
 }
 
-export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
+export function generateCoarseGrid(
+  seed: string = "world-seed",
+  configOverride?: WorldGenConfigInput
+): CoarseGrid {
   const width = 2048;
   const height = 1024;
   const size = width * height;
+
+  const config = mergeWorldGenConfig(configOverride);
+  const baseCount = Math.max(1, baseWorldGenConfig.continents.count);
+  const continentDensity =
+    Math.max(0.2, config.continents.count) / baseCount;
+  const worldRadius = clamp(config.continents.radius, 0.4, 1);
+  const shapeFrequency = config.continents.shapeNoiseFrequency * continentDensity;
+  const warpFrequency = config.continents.warpFrequency * continentDensity;
+  const warpStrength = clamp(config.continents.warpStrength, 0, 1.5);
+
+  const erosionIterations = Math.max(1, Math.round(config.elevation.erosionIterations));
+  const erosionStrength = clamp(config.elevation.erosionStrength, 0, 1);
+  const mountainStrength = clamp(config.elevation.mountainStrength, 0, 3);
+  const ridgeStrength = config.elevation.ridgeStrength;
+  const riftStrength = config.elevation.riftStrength;
+  const peakCount = Math.max(0, Math.round(config.elevation.peakCount));
+  const peakRadiusPx =
+    clamp(config.elevation.peakRadius, 0.005, 0.3) * Math.min(width, height);
+  const peakSharpness = Math.max(0.5, config.elevation.peakSharpness);
+  const peakStrength = config.elevation.peakStrength;
+  const elevationBias = clamp(config.elevation.averageHeight - 0.5, -0.4, 0.4);
+
+  const biomesConfig = config.biomes;
+  const latSoftness = Math.max(0.2, biomesConfig.latitudinalSoftness);
+  const tempNoiseWeight = clamp(biomesConfig.temperatureNoiseWeight, 0, 1);
+  const humidityWidth = Math.max(0.1, biomesConfig.humidityWidth);
+  const wetlandThreshold = clamp(biomesConfig.wetlandRiverThreshold, 0, 1);
 
   const elevation = new Array(size);
   const temperature = new Array(size);
@@ -44,8 +76,6 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
   const continentalMask = new Array(size); // 0..1
   const baseElev = new Array(size);        // raw elevation signal (trước shaping)
 
-  const worldRadius = 0.8; // ~60% bán kính map -> ~1/3 diện tích
-
   for (let y = 0; y < height; y++) {
     const ny = (y / (height - 1)) * 2 - 1; // -1..1
 
@@ -61,12 +91,12 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
 
       // Noise tần số thấp cho shape tổng thể (nhiều "bong bóng" lục địa)
       const shape =
-        (continentalNoise(x * 0.004, y * 0.004) + 1) / 2; // 0..1
+        (continentalNoise(x * shapeFrequency, y * shapeFrequency) + 1) / 2; // 0..1
       const shaped = Math.pow(shape, 1.8); // đẩy về 0/1 hơn
 
       // Warp mask bằng noise tần số thấp để méo biên
-      const w = (warpNoise(x * 0.003, y * 0.003) + 1) / 2; // 0..1
-      const warpFactor = 0.7 + 0.6 * (w - 0.5); // ~0.4..1.0 quanh 0.7
+      const w = (warpNoise(x * warpFrequency, y * warpFrequency) + 1) / 2; // 0..1
+      const warpFactor = clamp(1 + warpStrength * (w - 0.5), 0.3, 1.7);
 
       let mask = radial * shaped * warpFactor;
       mask = clamp(mask, 0, 1);
@@ -74,7 +104,12 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
       continentalMask[idx] = mask;
 
       // Raw elevation (trước tectonics): noise đơn giản, mạnh hơn ở vùng mask cao
-      const n = continentalNoise(x * 0.01 + 100, y * 0.01 + 200); // -1..1
+      const continentalDetailScale = Math.max(0.002, shapeFrequency * 2.4);
+      const n =
+        continentalNoise(
+          x * continentalDetailScale + 100,
+          y * continentalDetailScale + 200
+        ) || 0; // -1..1
       const raw = n * mask;
       baseElev[idx] = raw; // khoảng -mask..+mask
     }
@@ -103,9 +138,46 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
 
       // sign > 0: ridge / mountain belt
       // sign < 0: rift / subduction (giảm)
-      const delta = strength * (sign > 0 ? 0.7 : -0.5);
+      const delta =
+        strength *
+        (sign > 0 ? ridgeStrength : -riftStrength) *
+        mountainStrength;
 
       baseElev[idx] = (baseElev[idx] as number) + delta;
+    }
+  }
+
+  // ============================================================
+  // Step 2.5: Inject configurable mountain peaks / belts
+  // ============================================================
+  if (peakCount > 0) {
+    const peakRng = Alea(seed + "_peaks");
+    const peaks = new Array(peakCount).fill(null).map(() => ({
+      x: peakRng() * width,
+      y: peakRng() * height,
+      strength: 0.4 + peakRng() * peakStrength,
+    }));
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        const mask = continentalMask[idx] as number;
+        if (!mask || mask < 0.25) continue;
+
+        let boost = 0;
+        for (const peak of peaks) {
+          const dx = (x - peak.x) / peakRadiusPx;
+          const dy = (y - peak.y) / peakRadiusPx;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist >= 1) continue;
+          const falloff = Math.pow(1 - dist, peakSharpness);
+          boost += falloff * peak.strength;
+        }
+
+        if (boost !== 0) {
+          baseElev[idx] = (baseElev[idx] as number) + boost * mountainStrength;
+        }
+      }
     }
   }
 
@@ -156,8 +228,7 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
   let current = shaped;
   let buffer = new Array(size);
 
-  const iterations = 6;
-  const erosionStrength = 0.45; // 0..1, càng cao càng mịn
+  const iterations = erosionIterations;
 
   for (let iter = 0; iter < iterations; iter++) {
     for (let y = 0; y < height; y++) {
@@ -242,7 +313,7 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
 
   // current: elevation sau erosion + beautify trong [-1,1]
   for (let i = 0; i < size; i++) {
-    const h = (beautified[i] as number + 1) * 0.5; // -> 0..1
+    const h = (beautified[i] as number + 1) * 0.5 + elevationBias; // -> 0..1
     elevation[i] = clamp(h, 0, 1);
   }
 
@@ -334,9 +405,14 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
 
   const shallowSeaLevel = 0.38;
   const deepSeaLevel = 0.25;
+  const tempBands = biomesConfig.temperatureBands;
+  const humidityBands = biomesConfig.humidityBands;
+  const mountainCfg = biomesConfig.mountain;
+  const latWeight = 1 - tempNoiseWeight;
 
   for (let y = 0; y < height; y++) {
     const lat = y / height; // 0 = nam, 1 = bắc
+    const latNorm = Math.abs(lat - 0.5) * 2;
 
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -344,9 +420,9 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
       const elev = elevation[idx] as number;
 
       // Temperature: vĩ độ + noise
-      const latTemp = 1 - Math.abs(lat - 0.5) * 2; // nóng nhất ở xích đạo
+      const latComponent = Math.pow(1 - latNorm, latSoftness); // nóng nhất ở xích đạo
       const noiseTemp = (tempNoise(x * tempScale, y * tempScale) + 1) / 2;
-      let t = 0.65 * latTemp + 0.35 * noiseTemp;
+      let t = latComponent * latWeight + noiseTemp * tempNoiseWeight;
       // Cao độ cao thì lạnh hơn một chút
       t -= elev * 0.3;
       t = clamp(t, 0, 1);
@@ -379,8 +455,8 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
       // 6 temperate grassland, 7 temperate forest, 8 tropical seasonal forest,
       // 9 rainforest, 10 taiga, 11 tundra,
       // 12 cold rocky mountain, 13 alpine snow, 14 river valley / wetlands
+      // 15 temperate mountain range, 16 jagged high peak
       let b = 0;
-      const riverStrength = river[idx] as number;
 
       if (elev < deepSeaLevel) {
         // deep ocean
@@ -390,52 +466,56 @@ export function generateCoarseGrid(seed: string = "world-seed"): CoarseGrid {
         b = t > 0.6 ? 2 : 1;
       } else {
         // Land
-        const dryness = 1 - hHum;
+        const dryness = Math.pow(
+          clamp(1 - hHum, 0, 1),
+          humidityWidth
+        );
+        const isPolar = t < tempBands.polar;
+        const isBoreal = t < tempBands.boreal;
+        const isTropical = t > tempBands.tropical;
+        const riverStrength = river[idx] as number;
 
-        if (t < 0.18) {
-          // rất lạnh
-          if (elev > 0.8) {
-            b = 13; // alpine snow
-          } else {
-            b = 11; // tundra
-          }
-        } else if (t < 0.35) {
-          // lạnh / boreal
-          if (elev > 0.8) {
-            b = 13; // alpine snow
-          } else if (elev > 0.6) {
-            b = 12; // cold rocky mountain
-          } else {
-            b = 10; // taiga
-          }
-        } else if (t > 0.7) {
-          // nóng
-          if (dryness > 0.75) {
-            b = 3; // hot desert
-          } else if (dryness > 0.55) {
-            b = 4; // semi-arid scrub
-          } else if (hHum > 0.8 && r > 0.65) {
+        if (
+          elev > mountainCfg.snow ||
+          (elev > mountainCfg.range && t < tempBands.polar * 1.2)
+        ) {
+          b = 13; // alpine snow / băng
+        } else if (elev > mountainCfg.highPeak) {
+          b = 16; // jagged peak
+        } else if (elev > mountainCfg.range) {
+          b = isBoreal ? 12 : 15; // cold rocky mountain / temperate range
+        } else if (isPolar) {
+          b = 11; // tundra
+        } else if (isBoreal) {
+          b = 10; // taiga
+        } else if (isTropical) {
+          if (dryness > humidityBands.desert) {
+            b = 3; // nóng - desert
+          } else if (dryness > humidityBands.scrub) {
+            b = 4; // scrub
+          } else if (dryness > humidityBands.savanna) {
+            b = 5; // savanna
+          } else if (hHum > humidityBands.rainforest && r > 0.65) {
             b = 9; // rainforest
-          } else if (hHum > 0.55) {
+          } else if (hHum > humidityBands.forest) {
             b = 8; // tropical seasonal forest
           } else {
-            b = 5; // savanna
+            b = 5; // fallback savanna
           }
         } else {
-          // ôn đới
-          if (dryness > 0.7) {
+          if (dryness > humidityBands.desert) {
             b = 3; // cold desert / steppe
-          } else if (dryness > 0.5) {
-            b = 6; // temperate grassland
-          } else if (hHum > 0.7) {
+          } else if (dryness > humidityBands.scrub) {
+            b = 6; // khô -> grassland
+          } else if (hHum > humidityBands.forest) {
             b = 7; // temperate forest
           } else {
-            b = 6; // grassland
+            b = 6; // temperate grassland
           }
         }
 
         // River valley / wetlands ưu tiên nếu river mạnh
-        if (riverStrength > 0.45 && elev > shallowSeaLevel) {
+        if (riverStrength > wetlandThreshold && elev > shallowSeaLevel) {
           b = 14;
         }
       }

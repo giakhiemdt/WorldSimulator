@@ -1,0 +1,44 @@
+{
+  "continents": {
+    "count": 5,
+    "radius": 0.8,
+    "shapeNoiseFrequency": 0.004,
+    "warpFrequency": 0.003,
+    "warpStrength": 0.6
+  },
+  "elevation": {
+    "averageHeight": 0.52,
+    "ridgeStrength": 0.7,
+    "riftStrength": 0.5,
+    "mountainStrength": 1,
+    "erosionIterations": 6,
+    "erosionStrength": 0.45,
+    "peakCount": 12,
+    "peakRadius": 0.05,
+    "peakSharpness": 1.6,
+    "peakStrength": 0.45
+  },
+  "biomes": {
+    "latitudinalSoftness": 1.2,
+    "temperatureNoiseWeight": 0.35,
+    "humidityWidth": 1,
+    "temperatureBands": {
+      "polar": 0.18,
+      "boreal": 0.35,
+      "tropical": 0.7
+    },
+    "humidityBands": {
+      "desert": 0.75,
+      "scrub": 0.55,
+      "savanna": 0.45,
+      "forest": 0.65,
+      "rainforest": 0.8
+    },
+    "mountain": {
+      "range": 0.68,
+      "highPeak": 0.82,
+      "snow": 0.9
+    },
+    "wetlandRiverThreshold": 0.45
+  }
+}
