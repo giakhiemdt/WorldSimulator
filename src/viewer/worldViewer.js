@@ -1,6 +1,10 @@
-const width = 2048;
-const height = 1024;
+import {
+  baseWorldGenConfig,
+  mergeWorldGenConfig,
+} from "./runtimeGenerator.js";
 
+const defaultWidth = 2048;
+const defaultHeight = 1024;
 const deepSeaLevel = 0.25;
 const shallowSeaLevel = 0.38;
 
@@ -8,87 +12,25 @@ const canvas = /** @type {HTMLCanvasElement} */ (
   document.getElementById("canvas")
 );
 const ctx = canvas.getContext("2d");
-canvas.width = width;
-canvas.height = height;
+canvas.width = defaultWidth;
+canvas.height = defaultHeight;
 
 const statusEl = document.getElementById("status");
 const renderCompositeBtn = document.getElementById("renderCompositeBtn");
 const renderBiomeBtn = document.getElementById("renderBiomeBtn");
 const renderHeightBtn = document.getElementById("renderHeightBtn");
+const applyConfigBtn = document.getElementById("applyConfigBtn");
+const saveConfigBtn = document.getElementById("saveConfigBtn");
+const seedInput = /** @type {HTMLInputElement} */ (
+  document.getElementById("seedInput")
+);
+const randomSeedBtn = document.getElementById("randomSeedBtn");
 
-function setStatus(text) {
-  if (statusEl) statusEl.textContent = text;
-}
-
-async function loadInt16Field(path, range) {
-  setStatus(`loading ${path}...`);
-  // Thêm query param để tránh cache của browser giữa các lần gen-world
-  const res = await fetch(`${path}?v=${Date.now()}`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${path}: ${res.status}`);
-  }
-  const buf = await res.arrayBuffer();
-  const i16 = new Int16Array(buf);
-  const out = new Float32Array(i16.length);
-  const scale = 1 / 32767;
-
-  if (range === "0-1") {
-    for (let i = 0; i < i16.length; i++) {
-      let v = i16[i] * scale;
-      if (v < 0) v = 0;
-      if (v > 1) v = 1;
-      out[i] = v;
-    }
-  } else {
-    for (let i = 0; i < i16.length; i++) {
-      let v = i16[i] * scale;
-      if (v < -1) v = -1;
-      if (v > 1) v = 1;
-      out[i] = v;
-    }
-  }
-
-  setStatus(`loaded ${path}`);
-  return out;
-}
-
-async function loadBiome(path) {
-  setStatus(`loading ${path}...`);
-  const res = await fetch(`${path}?v=${Date.now()}`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${path}: ${res.status}`);
-  }
-  const buf = await res.arrayBuffer();
-  const u8 = new Uint8Array(buf);
-  setStatus(`loaded ${path}`);
-  return u8;
-}
-
-function clamp01(v) {
-  if (v < 0) return 0;
-  if (v > 1) return 1;
-  return v;
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-function lerpColor(c1, c2, t) {
-  return [
-    Math.round(lerp(c1[0], c2[0], t)),
-    Math.round(lerp(c1[1], c2[1], t)),
-    Math.round(lerp(c1[2], c2[2], t)),
-  ];
-}
-
-function pickBand(bands, t) {
-  const clamped = clamp01(t);
-  for (const band of bands) {
-    if (clamped <= band.t) return band.color;
-  }
-  return bands[bands.length - 1].color;
-}
+const controlContainers = {
+  continents: document.getElementById("continentsControls"),
+  elevation: document.getElementById("elevationControls"),
+  biomes: document.getElementById("biomeControls"),
+};
 
 const oceanBands = [
   { t: 0.25, color: [4, 24, 68] },
@@ -117,33 +59,97 @@ const palette = {
   snow: [233, 233, 232],
   wetlands: [96, 160, 140],
 };
-const beachBandEnd = shallowSeaLevel + 0.012;
+
+const controlDefinitions = {
+  continents: [
+    { path: "continents.count", label: "Số lục địa", min: 1, max: 12, step: 1 },
+    { path: "continents.radius", label: "Bán kính vùng", min: 0.4, max: 1, step: 0.01 },
+    { path: "continents.shapeNoiseFrequency", label: "Tần số shape noise", min: 0.001, max: 0.01, step: 0.0005 },
+    { path: "continents.warpFrequency", label: "Tần số warp", min: 0.001, max: 0.01, step: 0.0005 },
+    { path: "continents.warpStrength", label: "Độ méo warp", min: 0, max: 1.5, step: 0.05 },
+  ],
+  elevation: [
+    { path: "elevation.averageHeight", label: "Độ cao trung bình", min: 0, max: 1, step: 0.01 },
+    { path: "elevation.ridgeStrength", label: "Ridge strength", min: 0, max: 2, step: 0.05 },
+    { path: "elevation.riftStrength", label: "Rift strength", min: 0, max: 2, step: 0.05 },
+    { path: "elevation.mountainStrength", label: "Mountain strength", min: 0, max: 3, step: 0.05 },
+    { path: "elevation.erosionIterations", label: "Số vòng erosion", min: 1, max: 12, step: 1 },
+    { path: "elevation.erosionStrength", label: "Độ mạnh erosion", min: 0, max: 1, step: 0.02 },
+    { path: "elevation.peakCount", label: "Số đỉnh núi thêm", min: 0, max: 30, step: 1 },
+    { path: "elevation.peakRadius", label: "Bán kính đỉnh núi", min: 0.005, max: 0.25, step: 0.005 },
+    { path: "elevation.peakSharpness", label: "Độ nhọn đỉnh núi", min: 0.5, max: 3, step: 0.05 },
+    { path: "elevation.peakStrength", label: "Biên độ đỉnh núi", min: 0, max: 1, step: 0.02 },
+  ],
+  biomes: [
+    { path: "biomes.latitudinalSoftness", label: "Latitudinal softness", min: 0.2, max: 2, step: 0.05 },
+    { path: "biomes.temperatureNoiseWeight", label: "Trọng số nhiệt độ noise", min: 0, max: 1, step: 0.02 },
+    { path: "biomes.humidityWidth", label: "Độ rộng vùng khô", min: 0.2, max: 3, step: 0.05 },
+    { path: "biomes.wetlandRiverThreshold", label: "Ngưỡng wetland/river", min: 0, max: 1, step: 0.02 },
+    { path: "biomes.temperatureBands.polar", label: "Nhiệt đới - Polar", min: 0, max: 0.4, step: 0.01 },
+    { path: "biomes.temperatureBands.boreal", label: "Nhiệt đới - Boreal", min: 0.2, max: 0.6, step: 0.01 },
+    { path: "biomes.temperatureBands.tropical", label: "Nhiệt đới - Tropical", min: 0.5, max: 0.9, step: 0.01 },
+    { path: "biomes.humidityBands.desert", label: "Dryness - Desert", min: 0.3, max: 1, step: 0.02 },
+    { path: "biomes.humidityBands.scrub", label: "Dryness - Scrub", min: 0.2, max: 0.9, step: 0.02 },
+    { path: "biomes.humidityBands.savanna", label: "Dryness - Savanna", min: 0.2, max: 0.8, step: 0.02 },
+    { path: "biomes.humidityBands.forest", label: "Độ ẩm - Forest", min: 0.3, max: 0.9, step: 0.02 },
+    { path: "biomes.humidityBands.rainforest", label: "Độ ẩm - Rainforest", min: 0.4, max: 1, step: 0.02 },
+    { path: "biomes.mountain.range", label: "Mountain range cutoff", min: 0.4, max: 0.9, step: 0.01 },
+    { path: "biomes.mountain.highPeak", label: "High peak cutoff", min: 0.6, max: 0.95, step: 0.01 },
+    { path: "biomes.mountain.snow", label: "Snow cutoff", min: 0.7, max: 1, step: 0.01 },
+  ],
+};
+
+let currentConfig = mergeWorldGenConfig();
+let currentSeed = "";
+let currentWorld = null;
+let regenTimer = null;
+let isGenerating = false;
+let queuedReason = null;
+let activeRenderMode = "composite";
+const controlRegistry = new Map();
+let workerRequestId = 0;
+let latestAppliedId = 0;
+
+const worker = new Worker("./generatorWorker.js?v=3", { type: "module" });
+
+function setStatus(text) {
+  if (statusEl) statusEl.textContent = text;
+}
+
+function clamp01(v) {
+  if (v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function lerpColor(c1, c2, t) {
+  return [
+    Math.round(lerp(c1[0], c2[0], t)),
+    Math.round(lerp(c1[1], c2[1], t)),
+    Math.round(lerp(c1[2], c2[2], t)),
+  ];
+}
+
+function pickBand(bands, t) {
+  const clamped = clamp01(t);
+  for (const band of bands) {
+    if (clamped <= band.t) return band.color;
+  }
+  return bands[bands.length - 1].color;
+}
 
 function biomeColor(biomeId, elev) {
-  // Elevation is 0..1, biomeId theo mapping trong generator
-  // 0 deep ocean
-  // 1 shelf (temperate / cold sea)
-  // 2 tropical shelf / warm sea
-  // 3 hot / cold desert
-  // 4 semi-arid scrub
-  // 5 savanna
-  // 6 temperate grassland
-  // 7 temperate forest
-  // 8 tropical seasonal forest
-  // 9 rainforest
-  // 10 taiga
-  // 11 tundra
-  // 12 cold rocky mountain
-  // 13 alpine snow
-  // 14 river valley / wetlands
-  // 15 temperate mountain range
-  // 16 jagged high peak
   const e = clamp01(elev);
   if (e < shallowSeaLevel) {
     const normalized = e / shallowSeaLevel;
     return pickBand(oceanBands, normalized);
   }
 
+  const beachBandEnd = shallowSeaLevel + 0.012;
   if (e < beachBandEnd) {
     return palette.beach;
   }
@@ -186,13 +192,13 @@ function biomeColor(biomeId, elev) {
   }
 }
 
-function applyHeightShading(rgb, elev) {
+function applyHeightShading(rgb) {
   // Cartoon map: giữ màu phẳng, không shading theo độ cao
   return rgb;
 }
 
 function drawComposite(elev, biome, river) {
-  const img = ctx.createImageData(width, height);
+  const img = ctx.createImageData(canvas.width, canvas.height);
   const dst = img.data;
 
   for (let i = 0; i < elev.length; i++) {
@@ -201,11 +207,9 @@ function drawComposite(elev, biome, river) {
     const r = river[i];
 
     const cBase = biomeColor(b, h);
-    // Land có shading theo độ cao, biển giữ màu base để không bị tối đen
     const isWater = h < shallowSeaLevel;
     const cShade = isWater ? cBase : applyHeightShading(cBase, h);
 
-    // Overlay river (ưu tiên hiển thị trên land)
     let [R, G, B] = cShade;
     if (r > 0.15 && h >= shallowSeaLevel) {
       const intensity = clamp01((r - 0.15) / 0.5);
@@ -227,7 +231,7 @@ function drawComposite(elev, biome, river) {
 }
 
 function drawBiomeOnly(elev, biome) {
-  const img = ctx.createImageData(width, height);
+  const img = ctx.createImageData(canvas.width, canvas.height);
   const dst = img.data;
 
   for (let i = 0; i < elev.length; i++) {
@@ -245,16 +249,15 @@ function drawBiomeOnly(elev, biome) {
 }
 
 function drawHeightOnly(elev) {
-  const img = ctx.createImageData(width, height);
+  const img = ctx.createImageData(canvas.width, canvas.height);
   const dst = img.data;
 
   for (let i = 0; i < elev.length; i++) {
     let v = clamp01(elev[i]);
-    // Sử dụng gamma nhẹ để tách land/sea
     if (v < shallowSeaLevel) {
       v = v * 0.8;
     } else {
-      v = 0.2 + (v - shallowSeaLevel) / (1 - shallowSeaLevel) * 0.8;
+      v = 0.2 + ((v - shallowSeaLevel) / (1 - shallowSeaLevel)) * 0.8;
     }
     const c = Math.round(v * 255);
     const j = i * 4;
@@ -267,66 +270,290 @@ function drawHeightOnly(elev) {
   ctx.putImageData(img, 0, 0);
 }
 
-async function renderComposite() {
-  try {
-    setStatus("loading fields...");
-    const [elev, biome, river] = await Promise.all([
-      loadInt16Field("../../data/elevation.bin", "0-1"),
-      loadBiome("../../data/biome.bin"),
-      loadInt16Field("../../data/river.bin", "0-1"),
-    ]);
-
-    if (elev.length !== width * height) {
-      console.warn("Unexpected elevation length", elev.length);
+function setDeepValue(obj, path, value) {
+  const parts = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length; i++) {
+    const key = parts[i];
+    if (i === parts.length - 1) {
+      cur[key] = value;
+    } else {
+      if (typeof cur[key] !== "object" || cur[key] === null) {
+        cur[key] = {};
+      }
+      cur = cur[key];
     }
-    if (biome.length !== width * height) {
-      console.warn("Unexpected biome length", biome.length);
-    }
-    if (river.length !== width * height) {
-      console.warn("Unexpected river length", river.length);
-    }
-
-    setStatus("drawing composite...");
-    drawComposite(elev, biome, river);
-    setStatus("composite rendered");
-  } catch (err) {
-    console.error(err);
-    setStatus("error: " + err.message);
   }
 }
 
-async function renderBiomeOnly() {
-  try {
-    setStatus("loading fields...");
-    const [elev, biome] = await Promise.all([
-      loadInt16Field("../../data/elevation.bin", "0-1"),
-      loadBiome("../../data/biome.bin"),
-    ]);
-    setStatus("drawing biome...");
-    drawBiomeOnly(elev, biome);
-    setStatus("biome rendered");
-  } catch (err) {
-    console.error(err);
-    setStatus("error: " + err.message);
+function getDeepValue(obj, path) {
+  return path.split(".").reduce((acc, key) => {
+    if (acc && typeof acc === "object") return acc[key];
+    return undefined;
+  }, obj);
+}
+
+function syncControlValue(path, value) {
+  const ref = controlRegistry.get(path);
+  if (!ref) return;
+  ref.range.value = value;
+  ref.number.value = value;
+}
+
+function buildControls(config) {
+  controlRegistry.clear();
+  createControlsForSection(controlContainers.continents, controlDefinitions.continents, config);
+  createControlsForSection(controlContainers.elevation, controlDefinitions.elevation, config);
+  createControlsForSection(controlContainers.biomes, controlDefinitions.biomes, config);
+}
+
+function createControlsForSection(container, definitions, config) {
+  if (!container) return;
+  container.innerHTML = "";
+
+  for (const def of definitions) {
+    const row = document.createElement("div");
+    row.className = "control-row";
+
+    const label = document.createElement("label");
+    label.textContent = def.label;
+
+    const inputs = document.createElement("div");
+    inputs.className = "control-inputs";
+
+    const range = document.createElement("input");
+    range.type = "range";
+    range.min = def.min;
+    range.max = def.max;
+    range.step = def.step;
+
+    const number = document.createElement("input");
+    number.type = "number";
+    number.min = def.min;
+    number.max = def.max;
+    number.step = def.step;
+
+    const setValue = (val) => {
+      range.value = val;
+      number.value = val;
+    };
+
+    const initialValue = getDeepValue(config, def.path);
+    setValue(initialValue);
+
+    const updateValue = (raw) => {
+      const numeric = Number(raw);
+      if (!Number.isFinite(numeric)) return;
+      setDeepValue(currentConfig, def.path, numeric);
+      setValue(numeric);
+      scheduleRegenerate("config change");
+    };
+
+    range.addEventListener("input", (e) => updateValue(e.target.value));
+    number.addEventListener("change", (e) => updateValue(e.target.value));
+
+    inputs.appendChild(range);
+    inputs.appendChild(number);
+    row.appendChild(label);
+    row.appendChild(inputs);
+    container.appendChild(row);
+
+    controlRegistry.set(def.path, { range, number, setValue });
   }
 }
 
-async function renderHeightOnly() {
-  try {
-    setStatus("loading elevation...");
-    const elev = await loadInt16Field("../../data/elevation.bin", "0-1");
-    setStatus("drawing height...");
-    drawHeightOnly(elev);
-    setStatus("height rendered");
-  } catch (err) {
-    console.error(err);
-    setStatus("error: " + err.message);
+function scheduleRegenerate(reason) {
+  if (regenTimer) {
+    clearTimeout(regenTimer);
+  }
+  regenTimer = setTimeout(() => {
+    regenTimer = null;
+    regenerateWorld(reason);
+  }, 400);
+}
+
+function renderCurrent() {
+  if (!currentWorld) {
+    setStatus("Chưa có dữ liệu để vẽ");
+    return;
+  }
+
+  if (activeRenderMode === "biome") {
+    drawBiomeOnly(currentWorld.elevation, currentWorld.biome);
+    setStatus(`Biome map | seed ${currentSeed}`);
+  } else if (activeRenderMode === "height") {
+    drawHeightOnly(currentWorld.elevation);
+    setStatus(`Height map | seed ${currentSeed}`);
+  } else {
+    drawComposite(currentWorld.elevation, currentWorld.biome, currentWorld.river);
+    setStatus(`Composite map | seed ${currentSeed}`);
   }
 }
 
-renderCompositeBtn?.addEventListener("click", renderComposite);
-renderBiomeBtn?.addEventListener("click", renderBiomeOnly);
-renderHeightBtn?.addEventListener("click", renderHeightOnly);
+function regenerateWorld(reason = "") {
+  if (regenTimer) {
+    clearTimeout(regenTimer);
+    regenTimer = null;
+  }
+  if (isGenerating) {
+    queuedReason = reason || queuedReason || "pending";
+    return;
+  }
+  isGenerating = true;
+  queuedReason = null;
 
-// Render lần đầu
-renderComposite();
+  const seedValue = (seedInput?.value || currentSeed || "world-seed").trim();
+  currentSeed = seedValue || "world-seed";
+  const configToUse = mergeWorldGenConfig(currentConfig);
+  const requestId = ++workerRequestId;
+
+  setStatus(`Worker đang sinh world (${reason || "apply"})...`);
+  worker.postMessage({
+    id: requestId,
+    seed: currentSeed,
+    config: configToUse,
+  });
+}
+
+function saveConfigToFile() {
+  const payload = {
+    seed: currentSeed,
+    config: mergeWorldGenConfig(currentConfig),
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "world-config-export.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  setStatus("Đã chuẩn bị file world-config-export.json");
+}
+
+async function loadSeedFromFile() {
+  try {
+    const res = await fetch(`../../data/seed.txt?v=${Date.now()}`);
+    if (res.ok) {
+      return (await res.text()).trim();
+    }
+  } catch (err) {
+    console.warn("Không đọc được seed.txt, dùng seed ngẫu nhiên", err);
+  }
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+async function loadConfigFromFile() {
+  try {
+    const res = await fetch(`../../world-config.json?v=${Date.now()}`);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    console.warn("Không đọc được world-config.json, dùng base config", err);
+  }
+  return baseWorldGenConfig;
+}
+
+async function init() {
+  setStatus("loading seed + config...");
+  const [seed, cfg] = await Promise.all([
+    loadSeedFromFile(),
+    loadConfigFromFile(),
+  ]);
+
+  currentSeed = seed;
+  currentConfig = mergeWorldGenConfig(cfg);
+  if (seedInput) seedInput.value = currentSeed;
+
+  buildControls(currentConfig);
+  setStatus("đang render world đầu tiên...");
+  await regenerateWorld("initial render");
+}
+
+renderCompositeBtn?.addEventListener("click", () => {
+  activeRenderMode = "composite";
+  renderCurrent();
+});
+renderBiomeBtn?.addEventListener("click", () => {
+  activeRenderMode = "biome";
+  renderCurrent();
+});
+renderHeightBtn?.addEventListener("click", () => {
+  activeRenderMode = "height";
+  renderCurrent();
+});
+
+applyConfigBtn?.addEventListener("click", () => {
+  regenerateWorld("apply button");
+});
+
+saveConfigBtn?.addEventListener("click", () => {
+  saveConfigToFile();
+});
+
+seedInput?.addEventListener("change", (e) => {
+  currentSeed = (e.target.value || "").trim() || currentSeed;
+  scheduleRegenerate("seed change");
+});
+
+randomSeedBtn?.addEventListener("click", () => {
+  const newSeed = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  if (seedInput) seedInput.value = newSeed;
+  currentSeed = newSeed;
+  regenerateWorld("random seed");
+});
+
+worker.onmessage = (event) => {
+  const data = event.data;
+  if (typeof data !== "object" || data === null) return;
+  const { id, error } = data;
+  if (id && id < latestAppliedId) {
+    return; // stale response
+  }
+  if (error) {
+    console.error("Worker error", error);
+    setStatus("error: " + error);
+    isGenerating = false;
+    return;
+  }
+
+  latestAppliedId = id || latestAppliedId;
+
+  try {
+    const world = {
+      width: data.width,
+      height: data.height,
+      elevation: data.elevation instanceof Float32Array ? data.elevation : new Float32Array(data.elevation || []),
+      temperature: data.temperature instanceof Float32Array ? data.temperature : new Float32Array(data.temperature || []),
+      humidity: data.humidity instanceof Float32Array ? data.humidity : new Float32Array(data.humidity || []),
+      rainfall: data.rainfall instanceof Float32Array ? data.rainfall : new Float32Array(data.rainfall || []),
+      biome: data.biome instanceof Uint8Array ? data.biome : new Uint8Array(data.biome || []),
+      windU: data.windU instanceof Float32Array ? data.windU : new Float32Array(data.windU || []),
+      windV: data.windV instanceof Float32Array ? data.windV : new Float32Array(data.windV || []),
+      river: data.river instanceof Float32Array ? data.river : new Float32Array(data.river || []),
+    };
+
+    if (canvas.width !== world.width || canvas.height !== world.height) {
+      canvas.width = world.width;
+      canvas.height = world.height;
+    }
+
+    currentWorld = world;
+    renderCurrent();
+    setStatus(`Rendered | seed ${currentSeed}`);
+  } catch (err) {
+    console.error("Render error", err);
+    setStatus("error: " + err.message);
+  } finally {
+    isGenerating = false;
+    if (queuedReason) {
+      const nextReason = queuedReason;
+      queuedReason = null;
+      regenerateWorld(nextReason);
+    }
+  }
+};
+
+init();
